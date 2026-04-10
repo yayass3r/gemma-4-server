@@ -1,32 +1,31 @@
 """
 Gemma 4 E2B Instruct - OpenAI-Compatible API Server
-Deployed on Railway with llama-cpp-python
+Deployed on Render with llama-cpp-python
 """
 
 import os
-import asyncio
 import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Environment
+# Environment - Render sets PORT automatically
 MODEL_URL = os.environ.get(
     "MODEL_URL",
     "https://huggingface.co/bartowski/google_gemma-4-2b-it-GGUF/resolve/main/google_gemma-4-2b-it-Q4_K_M.gguf"
 )
 MODEL_FILE = "/app/models/model.gguf"
 MODEL_DIR = "/app/models"
-PORT = int(os.environ.get("PORT", "8000"))
-CTX_SIZE = int(os.environ.get("CTX_SIZE", "4096"))
-MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "2048"))
+PORT = int(os.environ.get("PORT", "10000"))
+CTX_SIZE = int(os.environ.get("CTX_SIZE", "2048"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "1024"))
 
 # Global model instance
 llm = None
@@ -36,20 +35,25 @@ def download_model():
     """Download model from HuggingFace if not present."""
     os.makedirs(MODEL_DIR, exist_ok=True)
     if os.path.exists(MODEL_FILE):
-        logger.info(f"Model already exists at {MODEL_FILE}")
+        size_mb = os.path.getsize(MODEL_FILE) / (1024 * 1024)
+        logger.info(f"Model already exists at {MODEL_FILE} ({size_mb:.1f} MB)")
         return
 
     logger.info(f"Downloading model from {MODEL_URL}...")
     import urllib.request
+    def report_progress(block_num, block_size, total_size):
+        downloaded = block_num * block_size
+        percent = min(downloaded / total_size * 100, 100) if total_size > 0 else 0
+        mb_down = downloaded / (1024 * 1024)
+        mb_total = total_size / (1024 * 1024)
+        logger.info(f"Download: {mb_down:.1f}/{mb_total:.1f} MB ({percent:.1f}%)")
+
     try:
-        urllib.request.urlretrieve(MODEL_URL, MODEL_FILE)
-        logger.info("Model downloaded successfully")
+        urllib.request.urlretrieve(MODEL_URL, MODEL_FILE, reporthook=report_progress)
+        logger.info("Model downloaded successfully!")
     except Exception as e:
         logger.error(f"Failed to download model: {e}")
-        # Try alternative URL
-        alt_url = "https://huggingface.co/bartowski/google_gemma-4-2b-it-GGUF/resolve/main/google_gemma-4-2b-it-Q4_K_M.gguf"
-        logger.info(f"Trying alternative URL: {alt_url}")
-        urllib.request.urlretrieve(alt_url, MODEL_FILE)
+        raise
 
 
 def load_model():
@@ -65,6 +69,7 @@ def load_model():
         n_gpu_layers=0,
         verbose=False,
         chat_format="chatml",
+        n_threads=os.cpu_count() or 2,
     )
     logger.info("Model loaded successfully!")
     return llm
@@ -73,7 +78,7 @@ def load_model():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
-    logger.info("Starting Gemma 4 Server...")
+    logger.info("Starting Gemma 4 Server on Render...")
     download_model()
     load_model()
     logger.info(f"Gemma 4 Server ready on port {PORT}")
